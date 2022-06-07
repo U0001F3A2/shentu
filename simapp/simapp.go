@@ -1,9 +1,14 @@
 package simapp
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/CosmWasm/wasmd/x/wasm"
 
 	"github.com/gorilla/mux"
 	"github.com/rakyll/statik/fs"
@@ -123,6 +128,18 @@ var (
 	// DefaultNodeHome specifies where the node daemon data is stored.
 	DefaultNodeHome = os.ExpandEnv("$HOME/.certik")
 
+	// If EnabledSpecificWasmProposals is "", and this is "true", then enable all x/wasm proposals.
+	// If EnabledSpecificWasmProposals is "", and this is not "true", then disable all x/wasm proposals.
+	WasmProposalsEnabled = "false"
+
+	// If set to non-empty string it must be comma-separated list of values that are all a subset
+	// of "EnableAllProposals" (takes precedence over WasmProposalsEnabled)
+	// https://github.com/CosmWasm/wasmd/blob/02a54d33ff2c064f3539ae12d75d027d9c665f05/x/wasm/internal/types/proposal.go#L28-L34
+	EnableSpecificWasmProposals = ""
+
+	// EmptyWasmOpts defines a type alias for a list of wasm options.
+	EmptyWasmOpts []wasm.Option
+
 	// ModuleBasics is in charge of setting up basic, non-dependant module
 	// elements, such as codec registration and genesis verification.
 	ModuleBasics = module.NewBasicManager(
@@ -142,6 +159,7 @@ var (
 			upgradeclient.CancelProposalHandler,
 			certclient.ProposalHandler,
 			shieldclient.ProposalHandler,
+			// TODO Xiuming wasm?
 		),
 		params.AppModuleBasic{},
 		crisis.AppModuleBasic{},
@@ -154,6 +172,7 @@ var (
 		evidence.AppModuleBasic{},
 		ibc.AppModuleBasic{},
 		transfer.AppModuleBasic{},
+		wasm.AppModuleBasic{},
 	)
 
 	// module account permissions
@@ -168,6 +187,7 @@ var (
 		shieldtypes.ModuleName:         {authtypes.Burner},
 		cvmtypes.ModuleName:            {authtypes.Minter, authtypes.Burner},
 		ibctransfertypes.ModuleName:    {authtypes.Minter, authtypes.Burner},
+		wasm.ModuleName:                {authtypes.Burner},
 	}
 
 	// module accounts that are allowed to receive tokens
@@ -177,6 +197,23 @@ var (
 		shieldtypes.ModuleName: true,
 	}
 )
+
+// GetEnabledProposals parses the WasmProposalsEnabled / EnableSpecificWasmProposals values to
+// produce a list of enabled proposals to pass into wasmd app.
+func GetWasmEnabledProposals() []wasm.ProposalType {
+	if EnableSpecificWasmProposals == "" {
+		if WasmProposalsEnabled == "true" {
+			return wasm.EnableAllProposals
+		}
+		return wasm.DisableAllProposals
+	}
+	chunks := strings.Split(EnableSpecificWasmProposals, ",")
+	proposals, err := wasm.ConvertToProposals(chunks)
+	if err != nil {
+		panic(err)
+	}
+	return proposals
+}
 
 // Verify app interface at compile time
 var _ simapp.App = (*SimApp)(nil)
@@ -216,11 +253,13 @@ type SimApp struct {
 	IBCKeeper        *ibckeeper.Keeper // IBC Keeper must be a pointer in the app, so we can SetRouter on it correctly
 	EvidenceKeeper   evidencekeeper.Keeper
 	TransferKeeper   ibctransferkeeper.Keeper
+	WasmKeeper       *wasm.Keeper
 
 	// make scoped keepers public for test purposes
 	ScopedIBCKeeper      capabilitykeeper.ScopedKeeper
 	ScopedTransferKeeper capabilitykeeper.ScopedKeeper
 	ScopedIBCMockKeeper  capabilitykeeper.ScopedKeeper
+	ScopedWasmKeeper     capabilitykeeper.ScopedKeeper
 
 	// module manager
 	mm *module.Manager
@@ -236,7 +275,9 @@ type SimApp struct {
 func NewSimApp(
 	logger log.Logger, db dbm.DB, traceStore io.Writer, loadLatest bool, skipUpgradeHeights map[int64]bool,
 	homePath string, invCheckPeriod uint, encodingConfig simappparams.EncodingConfig,
-	appOpts servertypes.AppOptions, baseAppOptions ...func(*baseapp.BaseApp),
+	appOpts servertypes.AppOptions,
+	wasmEnabledProposals []wasm.ProposalType, wasmOpts []wasm.Option,
+	baseAppOptions ...func(*baseapp.BaseApp),
 ) *SimApp {
 	// TODO: Remove cdc in favor of appCodec once all modules are migrated.
 	appCodec := encodingConfig.Marshaler
@@ -268,6 +309,7 @@ func NewSimApp(
 		ibchost.StoreKey,
 		ibctransfertypes.StoreKey,
 		capabilitytypes.StoreKey,
+		wasm.StoreKey,
 	}
 
 	keys := sdk.NewKVStoreKeys(ks...)
@@ -290,6 +332,13 @@ func NewSimApp(
 		tkeys:             tkeys,
 		memKeys:           memKeys,
 	}
+
+	wasmDir := filepath.Join(homePath, "wasm")
+	wasmConfig, err := wasm.ReadWasmConfig(appOpts)
+	if err != nil {
+		panic(fmt.Sprintf("error while reading wasm config: %s", err))
+	}
+
 	// initialize params keeper and subspaces
 	app.ParamsKeeper = initParamsKeeper(appCodec, legacyAmino, keys[paramstypes.StoreKey], tkeys[paramstypes.TStoreKey])
 
@@ -303,6 +352,8 @@ func NewSimApp(
 	// NOTE: the IBC mock keeper and application module is used only for testing core IBC. Do
 	// note replicate if you do not need to test core IBC or light clients.
 	scopedIBCMockKeeper := app.CapabilityKeeper.ScopeToModule(ibcmock.ModuleName)
+
+	app.ScopedWasmKeeper = app.CapabilityKeeper.ScopeToModule(wasm.ModuleName)
 
 	// initialize keepers
 	app.AccountKeeper = sdkauthkeeper.NewAccountKeeper(
@@ -413,6 +464,34 @@ func NewSimApp(
 		),
 	)
 
+	// The last arguments can contain custom message handlers, and custom query handlers,
+	// if we want to allow any custom callbacks
+	supportedFeatures := "iterator,staking,stargate,CertiK"
+
+	// TODO Xiuming set up wasmOpts
+
+	wasmK := wasm.NewKeeper(
+		appCodec,
+		keys[wasm.StoreKey],
+		app.GetSubspace(wasm.ModuleName),
+		app.AccountKeeper,
+		app.BankKeeper,
+		app.StakingKeeper,
+		app.DistrKeeper,
+		app.IBCKeeper.ChannelKeeper,
+		&app.IBCKeeper.PortKeeper,
+		app.ScopedWasmKeeper,
+		app.TransferKeeper,
+		bApp.MsgServiceRouter(),
+		bApp.GRPCQueryRouter(),
+		wasmDir,
+		wasmConfig,
+		supportedFeatures,
+		wasmOpts...,
+	)
+
+	app.WasmKeeper = &wasmK
+
 	// Create IBC Keeper
 	app.IBCKeeper = ibckeeper.NewKeeper(
 		appCodec, keys[ibchost.StoreKey], app.GetSubspace(ibchost.ModuleName), app.StakingKeeper, app.UpgradeKeeper, scopedIBCKeeper,
@@ -426,6 +505,10 @@ func NewSimApp(
 		AddRoute(ibchost.RouterKey, ibcclient.NewClientProposalHandler(app.IBCKeeper.ClientKeeper)).
 		AddRoute(shieldtypes.RouterKey, shield.NewShieldClaimProposalHandler(app.ShieldKeeper)).
 		AddRoute(certtypes.RouterKey, cert.NewCertifierUpdateProposalHandler(app.CertKeeper))
+
+	if len(wasmEnabledProposals) != 0 {
+		govRouter.AddRoute(wasm.RouterKey, wasm.NewWasmProposalHandler(app.WasmKeeper, wasmEnabledProposals))
+	}
 
 	app.GovKeeper = govkeeper.NewKeeper(
 		appCodec,
@@ -455,6 +538,10 @@ func NewSimApp(
 	ibcRouter := porttypes.NewRouter()
 	ibcRouter.AddRoute(ibctransfertypes.ModuleName, transferModule)
 	ibcRouter.AddRoute(ibcmock.ModuleName, mockModule)
+
+	// wire up x/wasm to IBC
+	ibcRouter.AddRoute(wasm.ModuleName, wasm.NewIBCHandler(app.WasmKeeper, app.IBCKeeper.ChannelKeeper))
+
 	app.IBCKeeper.SetRouter(ibcRouter)
 
 	// create evidence keeper with router
@@ -492,17 +579,18 @@ func NewSimApp(
 		oracle.NewAppModule(app.OracleKeeper, app.BankKeeper),
 		shield.NewAppModule(app.ShieldKeeper, app.AccountKeeper, app.BankKeeper, app.StakingKeeper),
 		transferModule,
+		wasm.NewAppModule(appCodec, app.WasmKeeper, app.StakingKeeper),
 	)
 
 	// NOTE: During BeginBlocker, slashing comes after distr so that
 	// there is nothing left over in the validator fee pool, so as to
 	// keep the CanWithdrawInvariant invariant.
 	app.mm.SetOrderBeginBlockers(upgradetypes.ModuleName, sdkminttypes.ModuleName, distrtypes.ModuleName, slashingtypes.ModuleName, evidencetypes.ModuleName,
-		oracletypes.ModuleName, cvmtypes.ModuleName, shieldtypes.ModuleName)
+		oracletypes.ModuleName, cvmtypes.ModuleName, shieldtypes.ModuleName, wasm.ModuleName)
 
 	// NOTE: Shield endblocker comes before staking because it queries
 	// unbonding delegations that staking endblocker deletes.
-	app.mm.SetOrderEndBlockers(crisistypes.ModuleName, cvmtypes.ModuleName, shieldtypes.ModuleName, stakingtypes.ModuleName, sdkgovtypes.ModuleName, oracletypes.ModuleName)
+	app.mm.SetOrderEndBlockers(crisistypes.ModuleName, cvmtypes.ModuleName, shieldtypes.ModuleName, stakingtypes.ModuleName, sdkgovtypes.ModuleName, oracletypes.ModuleName, wasm.ModuleName)
 
 	// NOTE: genutil moodule must occur after staking so that pools
 	// are properly initialized with tokens from genesis accounts.
@@ -524,6 +612,7 @@ func NewSimApp(
 		oracletypes.ModuleName,
 		sdkauthz.ModuleName,
 		sdkfeegrant.ModuleName,
+		wasm.ModuleName,
 	)
 
 	app.mm.SetOrderExportGenesis(
@@ -544,6 +633,7 @@ func NewSimApp(
 		sdkauthz.ModuleName,
 		sdkfeegrant.ModuleName,
 		evidencetypes.ModuleName,
+		wasm.ModuleName,
 	)
 
 	app.mm.RegisterInvariants(&app.CrisisKeeper)
@@ -568,6 +658,7 @@ func NewSimApp(
 		oracle.NewAppModule(app.OracleKeeper, app.BankKeeper),
 		shield.NewAppModule(app.ShieldKeeper, app.AccountKeeper, app.BankKeeper, app.StakingKeeper),
 		transferModule,
+		wasm.NewAppModule(appCodec, app.WasmKeeper, app.StakingKeeper),
 	)
 
 	app.sm.RegisterStoreDecoders()
@@ -794,6 +885,6 @@ func initParamsKeeper(appCodec codec.BinaryCodec, legacyAmino *codec.LegacyAmino
 	paramsKeeper.Subspace(oracletypes.ModuleName).WithKeyTable(oracletypes.ParamKeyTable())
 	paramsKeeper.Subspace(cvmtypes.ModuleName).WithKeyTable(cvmtypes.ParamKeyTable())
 	paramsKeeper.Subspace(shieldtypes.ModuleName).WithKeyTable(shieldtypes.ParamKeyTable())
-
+	paramsKeeper.Subspace(wasm.ModuleName)
 	return paramsKeeper
 }

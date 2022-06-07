@@ -82,7 +82,8 @@ func TestFullAppSimulation(t *testing.T) {
 	}()
 
 	app := shentusimapp.NewSimApp(logger, db, nil, true, map[int64]bool{},
-		DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{}, fauxMerkleModeOpt)
+		DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{},
+		GetWasmEnabledProposals(), EmptyWasmOpts, fauxMerkleModeOpt)
 	require.Equal(t, AppName, app.Name())
 
 	// run randomized simulation
@@ -117,7 +118,8 @@ func TestAppImportExport(t *testing.T) {
 	//invCheckPeriod := simapp.FlagPeriodValue
 	var invCheckPeriod uint = 1
 	app := shentusimapp.NewSimApp(logger, db, nil, true, map[int64]bool{},
-		DefaultNodeHome, invCheckPeriod, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{}, fauxMerkleModeOpt)
+		DefaultNodeHome, invCheckPeriod, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{},
+		GetWasmEnabledProposals(), EmptyWasmOpts, fauxMerkleModeOpt)
 	require.Equal(t, AppName, app.Name())
 
 	// run randomized simulation
@@ -152,7 +154,8 @@ func TestAppImportExport(t *testing.T) {
 	}()
 
 	newApp := shentusimapp.NewSimApp(log.NewNopLogger(), newDB, nil, true, map[int64]bool{},
-		DefaultNodeHome, invCheckPeriod, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{}, fauxMerkleModeOpt)
+		DefaultNodeHome, invCheckPeriod, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{},
+		GetWasmEnabledProposals(), EmptyWasmOpts, fauxMerkleModeOpt)
 
 	require.Equal(t, AppName, newApp.Name())
 
@@ -217,7 +220,8 @@ func TestAppSimulationAfterImport(t *testing.T) {
 	}()
 
 	app := shentusimapp.NewSimApp(logger, db, nil, true, map[int64]bool{},
-		DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{}, fauxMerkleModeOpt)
+		DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{},
+		GetWasmEnabledProposals(), EmptyWasmOpts, fauxMerkleModeOpt)
 	require.Equal(t, AppName, app.Name())
 
 	// run randomized simulation
@@ -252,7 +256,8 @@ func TestAppSimulationAfterImport(t *testing.T) {
 	}()
 
 	newApp := shentusimapp.NewSimApp(log.NewNopLogger(), newDB, nil, true, map[int64]bool{},
-		DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{}, fauxMerkleModeOpt)
+		DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{},
+		GetWasmEnabledProposals(), EmptyWasmOpts, fauxMerkleModeOpt)
 	require.Equal(t, AppName, newApp.Name())
 
 	newApp.InitChain(abci.RequestInitChain{
@@ -287,7 +292,9 @@ func TestAppStateDeterminism(t *testing.T) {
 		logger := log.NewNopLogger()
 		db := dbm.NewMemDB()
 		app := shentusimapp.NewSimApp(logger, db, nil, true, map[int64]bool{},
-			DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{}, interBlockCacheOpt())
+			DefaultNodeHome, simapp.FlagPeriodValue, shentusimapp.MakeTestEncodingConfig(), EmptyAppOptions{},
+			GetWasmEnabledProposals(), EmptyWasmOpts,
+			interBlockCacheOpt())
 
 		fmt.Printf(
 			"running non-determinism simulation; seed %d: attempt: %d/%d\n",
